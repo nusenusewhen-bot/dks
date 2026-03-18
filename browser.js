@@ -15,7 +15,6 @@ async function randomDelay(min, max) {
 async function humanType(page, selector, text) {
   await page.click(selector);
   await randomDelay(50, 150);
-  // Type faster - 2-3 chars at once sometimes
   for (let i = 0; i < text.length; i += Math.random() > 0.7 ? 2 : 1) {
     const chars = text.slice(i, i + (Math.random() > 0.7 ? 2 : 1));
     await page.keyboard.insertText(chars);
@@ -122,7 +121,6 @@ async function createAccount() {
     const page = await context.newPage();
     await injectFPS(page, fingerprint);
     
-    // Skip mouse movements for speed
     log('Navigating...');
     await page.goto('https://discord.com/register', { 
       waitUntil: 'domcontentloaded',
@@ -153,10 +151,26 @@ async function createAccount() {
     await humanType(page, 'input[name="password"]', password);
     await randomDelay(300, 500);
     
-    // Fast date selection
-    await page.selectOption('[aria-label="Month"]', '1');
-    await page.selectOption('[aria-label="Day"]', '15');
-    await page.selectOption('[aria-label="Year"]', '1995');
+    // FIXED DATE PICKER - Discord uses custom dropdowns now
+    // Click Month dropdown
+    await page.click('[aria-label="Month"]');
+    await randomDelay(200, 400);
+    // Select January from the dropdown list
+    await page.click('text=January');
+    await randomDelay(200, 400);
+    
+    // Click Day dropdown
+    await page.click('[aria-label="Day"]');
+    await randomDelay(200, 400);
+    // Select 15
+    await page.click('text=15');
+    await randomDelay(200, 400);
+    
+    // Click Year dropdown
+    await page.click('[aria-label="Year"]');
+    await randomDelay(200, 400);
+    // Select 1995
+    await page.click('text=1995');
     await randomDelay(400, 800);
     
     await humanClick(page, 'button[type="submit"]');
