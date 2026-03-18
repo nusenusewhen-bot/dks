@@ -2,7 +2,6 @@ FROM mcr.microsoft.com/playwright:v1.40.0-jammy
 
 WORKDIR /app
 
-# Install xvfb for headful mode in container
 RUN apt-get update && apt-get install -y \
     xvfb \
     xauth \
@@ -14,15 +13,22 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     libappindicator3-1 \
     xdg-utils \
+    python3 \
+    make \
+    g++ \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm install && npx playwright install chromium
+RUN npm install
 
 COPY . .
 
 ENV DISPLAY=:99
 ENV NODE_ENV=production
+ENV PORT=3000
+
+# Railway sets PORT env var, bind to it
+EXPOSE 3000
 
 CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & node index.js"]
