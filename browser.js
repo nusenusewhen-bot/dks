@@ -1,38 +1,59 @@
 const { workerData, parentPort } = require('worker_threads');
 const { chromium } = require('playwright');
-const { getWorkingProxy } = require('./proxies');
+const { getWorkingProxy, isDirectMode } = require('./proxies');
 const { getTempEmail, checkInbox } = require('./email');
 const { generateInsaneFPS, injectFPS } = require('./utils');
 
 function log(msg) {
-  parentPort.postMessage({ type: 'log', data: `[Worker ${workerData.workerId}] ${msg}` });
+  parentPort.postMessage({ type: 'log', data: `[W${workerData.workerId}] ${msg}` });
+}
+
+async function randomDelay(min, max) {
+  return new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
+}
+
+async function humanType(page, selector, text) {
+  await page.click(selector);
+  await randomDelay(100, 300);
+  for (const char of text) {
+    await page.keyboard.press(char);
+    await randomDelay(30, 120);
+  }
+}
+
+async function humanClick(page, selector) {
+  const el = await page.$(selector);
+  if (!el) return;
+  const box = await el.boundingBox();
+  if (box) {
+    const x = box.x + box.width / 2 + (Math.random() * 10 - 5);
+    const y = box.y + box.height / 2 + (Math.random() * 10 - 5);
+    await page.mouse.move(x, y, { steps: 5 + Math.floor(Math.random() * 5) });
+    await randomDelay(50, 200);
+    await page.mouse.click(x, y);
+  } else {
+    await el.click();
+  }
 }
 
 async function createAccount() {
   let browser;
   try {
     const proxy = await getWorkingProxy();
-    if (!proxy) {
-      log('No working proxy, waiting...');
-      await new Promise(r => setTimeout(r, 30000));
-      return;
+    const email = await getTempEmail();
+    
+    if (proxy) {
+      log(`Using proxy: ${proxy} | Email: ${email}`);
+    } else {
+      log(`DIRECT CONNECTION | Email: ${email}`);
     }
     
-    const email = await getTempEmail();
-    log(`Proxy: ${proxy} | Email: ${email}`);
-    
-    // Enhanced browser launch with stealth
-    browser = await chromium.launch({
+    const launchOptions = {
       headless: false,
-      proxy: { server: `http://${proxy}` },
       args: [
         '--disable-blink-features=AutomationControlled',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-site-isolation-trials',
         '--disable-web-security',
-        '--disable-features=BlockInsecurePrivateNetworkRequests',
-        '--disable-features=InterestCohort',
-        '--disable-features=FencedFrame',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
@@ -42,7 +63,6 @@ async function createAccount() {
         '--single-process',
         '--disable-gpu',
         '--window-size=1366,768',
-        '--start-maximized',
         '--disable-background-networking',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
@@ -60,13 +80,17 @@ async function createAccount() {
         '--force-color-profile=srgb',
         '--metrics-recording-only',
         '--safebrowsing-disable-auto-update',
-        '--enable-automation',
         '--password-store=basic',
         '--use-mock-keychain'
       ]
-    });
-
-    // Create context with insane FPS
+    };
+    
+    if (proxy) {
+      launchOptions.proxy = { server: `http://${proxy}` };
+    }
+    
+    browser = await chromium.launch(launchOptions);
+    
     const fingerprint = generateInsaneFPS();
     
     const context = await browser.newContext({
@@ -78,8 +102,6 @@ async function createAccount() {
       geolocation: fingerprint.geolocation,
       permissions: ['notifications'],
       colorScheme: 'light',
-      reducedMotion: 'no-preference',
-      forcedColors: 'none',
       extraHTTPHeaders: {
         'Accept-Language': fingerprint.acceptLanguage,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -94,31 +116,32 @@ async function createAccount() {
         'Cache-Control': 'max-age=0'
       }
     });
-
-    // Inject FPS before any navigation
+    
     const page = await context.newPage();
     await injectFPS(page, fingerprint);
     
-    // Set extra headers for every request
     await page.route('**/*', async (route, request) => {
       const headers = {
         ...request.headers(),
         'sec-ch-ua': fingerprint.secChUa,
         'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': `"${fingerprint.platform}"`
+        'sec-ch-ua-platform': `"${fingerprint.platformInfo}"`
       };
       await route.continue({ headers });
     });
-
-    // Navigate with human-like behavior
+    
     log('Navigating to Discord...');
     await page.goto('https://discord.com', { 
       waitUntil: 'domcontentloaded',
       timeout: 30000 
     });
     
-    // Random mouse movements
-    await humanLikeMouseMove(page);
+    for (let i = 0; i < 3; i++) {
+      const x = Math.random() * 1366;
+      const y = Math.random() * 768;
+      await page.mouse.move(x, y, { steps: 5 });
+      await randomDelay(200, 500);
+    }
     
     await page.goto('https://discord.com/register', { 
       waitUntil: 'networkidle',
@@ -127,32 +150,30 @@ async function createAccount() {
     
     await randomDelay(2000, 4000);
     
-    // Check for blocks
     const blocked = await page.$('text=Sorry, something went wrong') 
       || await page.$('text=You are being rate limited')
-      || await page.$('text=Access denied');
+      || await page.$('text=Access denied')
+      || await page.$('text=The web server reported a bad gateway');
       
     if (blocked) {
-      log('Proxy/IP blocked by Discord');
+      log('IP/Proxy blocked by Discord - closing');
       await browser.close();
       return;
     }
     
-    // Fill form with human timing
     log('Filling registration form...');
     
     await humanType(page, 'input[name="email"]', email);
     await randomDelay(800, 1500);
     
-    const username = generateUsername();
+    const username = `User${Math.floor(Math.random() * 10000000)}`;
     await humanType(page, 'input[name="username"]', username);
     await randomDelay(600, 1200);
     
-    const password = generatePassword();
+    const password = `Pass${Math.random().toString(36).slice(2, 10)}!`;
     await humanType(page, 'input[name="password"]', password);
     await randomDelay(500, 1000);
     
-    // Date of birth with realistic clicking
     await humanClick(page, '[aria-label="Month"]');
     await randomDelay(200, 400);
     await humanClick(page, '[data-value="1"]');
@@ -168,25 +189,24 @@ async function createAccount() {
     await humanClick(page, '[data-value="1995"]');
     await randomDelay(800, 1500);
     
-    // Submit
+    log('Submitting form...');
     await humanClick(page, 'button[type="submit"]');
-    log('Form submitted, waiting for response...');
     
     await randomDelay(4000, 6000);
     
-    // Handle captcha
     const captcha = await page.$('iframe[src*="hcaptcha"]') 
-      || await page.$('iframe[src*="recaptcha"]');
+      || await page.$('iframe[src*="recaptcha"]')
+      || await page.$('.h-captcha')
+      || await page.$('[data-sitekey]');
       
     if (captcha) {
-      log('Captcha detected - attempting bypass or waiting...');
-      // Try to solve or wait for manual
-      await handleCaptcha(page);
+      log('Captcha detected - waiting 45s for solve...');
+      await randomDelay(45000, 50000);
     }
     
-    // Check for phone verification
     const phoneRequired = await page.$('text=Verify your phone number')
-      || await page.$('input[type="tel"]');
+      || await page.$('input[type="tel"]')
+      || await page.$('text=Phone number');
       
     if (phoneRequired) {
       log('Phone verification required - aborting');
@@ -194,19 +214,16 @@ async function createAccount() {
       return;
     }
     
-    // Check for email verification page
     const verifyPage = await page.$('text=Verify your email')
       || await page.$('text=Check your email');
       
     if (verifyPage) {
-      log('Email verification sent - waiting for confirmation...');
+      log('Email verification sent');
     }
     
     await randomDelay(3000, 5000);
     
-    // Extract token
     const token = await page.evaluate(() => {
-      // Try multiple sources
       return localStorage.getItem('token') 
         || sessionStorage.getItem('token')
         || document.cookie.match(/token=([^;]+)/)?.[1];
@@ -216,9 +233,8 @@ async function createAccount() {
       log('Token extracted successfully!');
       parentPort.postMessage({ type: 'token', token, email });
       
-      // Background email check
       setTimeout(async () => {
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 5; i++) {
           const verifyLink = await checkInbox(email);
           if (verifyLink) {
             log(`Verification link: ${verifyLink}`);
@@ -228,13 +244,10 @@ async function createAccount() {
         }
       }, 0);
     } else {
-      log('Failed to extract token - checking for issues...');
-      const pageContent = await page.content();
-      if (pageContent.includes('captcha') || pageContent.includes('CAPTCHA')) {
-        log('Captcha blocked registration');
-      } else if (pageContent.includes('rate limited')) {
-        log('Rate limited');
-      }
+      log('Failed to extract token');
+      const content = await page.content();
+      if (content.includes('captcha')) log('Blocked by captcha');
+      if (content.includes('rate limit')) log('Rate limited');
     }
     
     await browser.close();
@@ -246,86 +259,12 @@ async function createAccount() {
   }
 }
 
-// Human-like typing
-async function humanType(page, selector, text) {
-  await page.click(selector);
-  await randomDelay(100, 300);
-  
-  for (const char of text) {
-    await page.keyboard.press(char);
-    await randomDelay(50, 150);
-  }
-}
-
-// Human-like click with random offset
-async function humanClick(page, selector) {
-  const element = await page.$(selector);
-  if (!element) return;
-  
-  const box = await element.boundingBox();
-  if (box) {
-    const x = box.x + box.width / 2 + (Math.random() * 10 - 5);
-    const y = box.y + box.height / 2 + (Math.random() * 10 - 5);
-    await page.mouse.move(x, y, { steps: 10 });
-    await randomDelay(100, 300);
-    await page.mouse.click(x, y);
-  } else {
-    await element.click();
-  }
-}
-
-// Random mouse movements
-async function humanLikeMouseMove(page) {
-  for (let i = 0; i < 5; i++) {
-    const x = Math.random() * 1366;
-    const y = Math.random() * 768;
-    await page.mouse.move(x, y, { steps: 5 + Math.floor(Math.random() * 10) });
-    await randomDelay(100, 400);
-  }
-}
-
-// Handle captcha (basic implementation)
-async function handleCaptcha(page) {
-  // Wait for manual solve in non-headless
-  log('Waiting 45s for captcha solve...');
-  await randomDelay(45000, 50000);
-  
-  // Check if solved
-  const stillThere = await page.$('iframe[src*="hcaptcha"]');
-  if (!stillThere) {
-    log('Captcha appears solved');
-  }
-}
-
-function generateUsername() {
-  const adjectives = ['Quick', 'Fast', 'Cool', 'Pro', 'Super', 'Mega', 'Ultra', 'Hyper'];
-  const nouns = ['Gamer', 'Player', 'User', 'Dev', 'Coder', 'Ninja', 'Ghost', 'Shadow'];
-  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  const num = Math.floor(Math.random() * 10000);
-  return `${adj}${noun}${num}`;
-}
-
-function generatePassword() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-  let pass = '';
-  for (let i = 0; i < 16; i++) {
-    pass += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return pass;
-}
-
-function randomDelay(min, max) {
-  return new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
-}
-
-// Main loop
 (async function main() {
   log('Worker started');
   while (true) {
     await createAccount();
-    const delay = 45000 + Math.random() * 90000; // 45s to 2.5min between accounts
+    const delay = isDirectMode() ? 120000 + Math.random() * 60000 : 45000 + Math.random() * 90000;
     log(`Waiting ${Math.round(delay/1000)}s...`);
-    await randomDelay(delay, delay + 30000);
+    await randomDelay(delay, delay);
   }
 })();
