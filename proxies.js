@@ -2,6 +2,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 
 let proxyPool = [];
+let lastUpdate = 0;
 
 async function scrapeProxies() {
   const sources = [
@@ -14,45 +15,60 @@ async function scrapeProxies() {
   
   for (const url of sources) {
     try {
-      const { data } = await axios.get(url, { timeout: 10000 });
+      const { data } = await axios.get(url, { 
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
       const $ = cheerio.load(data);
       
-      $('table tr').each((i, row) => {
+      $('table tbody tr').each((i, row) => {
         const cols = $(row).find('td');
-        if (cols.length > 1) {
-          const ip = $(cols[0]).text();
-          const port = $(cols[1]).text();
-          const https = $(cols[6]).text();
-          if (https === 'yes' && ip && port) {
+        if (cols.length > 6) {
+          const ip = $(cols[0]).text().trim();
+          const port = $(cols[1]).text().trim();
+          const https = $(cols[6]).text().trim();
+          if (ip && port && https === 'yes') {
             newProxies.push(`${ip}:${port}`);
           }
         }
       });
-    } catch (e) {}
+    } catch (e) {
+      console.log('Proxy scrape failed:', e.message);
+    }
   }
   
-  // Test proxies
   const working = [];
-  for (const proxy of newProxies.slice(0, 20)) {
+  for (const proxy of newProxies.slice(0, 15)) {
     try {
       await axios.get('https://discord.com', {
-        proxy: { host: proxy.split(':')[0], port: proxy.split(':')[1] },
-        timeout: 5000
+        proxy: { 
+          host: proxy.split(':')[0], 
+          port: parseInt(proxy.split(':')[1])
+        },
+        timeout: 8000
       });
       working.push(proxy);
     } catch (e) {}
   }
   
   proxyPool = working;
-  console.log(`[PROXY] Pool updated: ${working.length} working`);
+  lastUpdate = Date.now();
+  console.log(`[PROXY] ${working.length} working proxies`);
 }
 
 async function getWorkingProxy() {
-  if (proxyPool.length === 0) await scrapeProxies();
+  if (proxyPool.length === 0 || Date.now() - lastUpdate > 300000) {
+    await scrapeProxies();
+  }
+  if (proxyPool.length === 0) return null;
   return proxyPool[Math.floor(Math.random() * proxyPool.length)];
 }
 
-setInterval(scrapeProxies, 300000); // Refresh every 5 min
-scrapeProxies();
+// WRAP IN ASYNC IIFE
+(async function init() {
+  await scrapeProxies();
+})();
 
 module.exports = { getWorkingProxy, scrapeProxies };
