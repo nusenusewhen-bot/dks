@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.40.0-jammy
+FROM mcr.microsoft.com/playwright:v1.58.2-jammy
 
 WORKDIR /app
 
@@ -28,7 +28,6 @@ ENV DISPLAY=:99
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Railway sets PORT env var, bind to it
 EXPOSE 3000
 
 CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & node index.js"]
