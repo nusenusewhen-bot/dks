@@ -1,4 +1,3 @@
-// captcha-solver.js
 const axios = require('axios');
 const sharp = require('sharp');
 const tf = require('@tensorflow/tfjs-node');
