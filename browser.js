@@ -1,15 +1,18 @@
-const { solveCaptcha } = require('./captcha-solver');
+const { solve } = require('./captcha-solver');
 
-// In createAccount function, replace captcha handling:
+// In createAccount, replace captcha handling:
 const captcha = await page.$('iframe[src*="hcaptcha"]');
 if (captcha) {
   log('Captcha detected - solving...');
-  const solved = await solveCaptcha(page);
-  if (solved) {
-    log('Captcha solved!');
-    await randomDelay(3000, 5000);
+  const result = await solve(page, {
+    useExternalAPI: false, // Set true with apiKey for fallback
+    timeout: 120000
+  });
+  
+  if (result.success) {
+    log(`Captcha solved! (${result.method})`);
   } else {
-    log('Captcha solve failed - waiting manual...');
-    await randomDelay(45000, 50000);
+    log(`Captcha failed: ${result.error}`);
+    await randomDelay(30000, 45000); // Manual fallback
   }
 }
