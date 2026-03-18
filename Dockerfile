@@ -18,12 +18,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install && npx playwright install chromium
 
 COPY . .
 
-# Use display :99 for xvfb
 ENV DISPLAY=:99
 ENV NODE_ENV=production
 
-CMD Xvfb :99 -screen 0 1920x1080x24 & npx playwright install chromium && node index.js
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & node index.js"]
