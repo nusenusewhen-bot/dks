@@ -1,12 +1,36 @@
 const { Worker } = require('worker_threads');
-const Database = require('better-sqlite3');
 const http = require('http');
+const fs = require('fs');
+const { scrapeProxies } = require('./proxies');
 
-// Start health server IMMEDIATELY before anything else
+// Simple JSON database
+const DB_FILE = './tokens.json';
+function saveToken(token, email) {
+  try {
+    let data = [];
+    if (fs.existsSync(DB_FILE)) {
+      data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    }
+    data.push({ token, email, created_at: new Date().toISOString() });
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.log('[DB] Save error:', e.message);
+  }
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
+  } else if (req.url === '/tokens') {
+    try {
+      const data = fs.existsSync(DB_FILE) ? fs.readFileSync(DB_FILE, 'utf8') : '[]';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(data);
+    } catch (e) {
+      res.writeHead(500);
+      res.end('[]');
+    }
   } else {
     res.writeHead(404);
     res.end();
@@ -14,34 +38,18 @@ const server = http.createServer((req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-
-// Bind to 0.0.0.0 to accept external connections
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[HEALTH] Server running on 0.0.0.0:${PORT}`);
+  console.log(`[HEALTH] Running on 0.0.0.0:${PORT}`);
 });
 
-// Database setup
-let db;
-try {
-  db = new Database('./tokens.db');
-  db.exec(`CREATE TABLE IF NOT EXISTS tokens (
-    id INTEGER PRIMARY KEY,
-    token TEXT UNIQUE,
-    email TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    status TEXT DEFAULT 'unverified'
-  )`);
-  console.log('[DB] Connected');
-} catch (e) {
-  console.log('[DB] Error:', e.message);
-  // Continue even if DB fails
-}
-
-const PROXY_WORKERS = 2; // Reduced for Railway starter
+const PROXY_WORKERS = 2;
 
 async function main() {
-  console.log('[GEN] Starting workers in 5s...');
-  await new Promise(r => setTimeout(r, 5000)); // Let healthcheck pass first
+  console.log('[GEN] Initializing proxies...');
+  await scrapeProxies();
+  
+  console.log('[GEN] Starting workers in 3s...');
+  await new Promise(r => setTimeout(r, 3000));
   
   for (let i = 0; i < PROXY_WORKERS; i++) {
     try {
@@ -50,18 +58,15 @@ async function main() {
       });
       
       worker.on('message', (msg) => {
-        if (msg.type === 'token' && db) {
-          try {
-            db.prepare('INSERT OR IGNORE INTO tokens (token, email) VALUES (?, ?)')
-              .run(msg.token, msg.email);
-            console.log(`[+] Token: ${msg.token.slice(0, 30)}...`);
-          } catch (e) {}
+        if (msg.type === 'token') {
+          saveToken(msg.token, msg.email);
+          console.log(`[+] Token: ${msg.token.slice(0, 30)}...`);
         }
         if (msg.type === 'error') {
           console.log(`[-] Worker ${i}:`, msg.error);
         }
         if (msg.type === 'log') {
-          console.log(`[W${i}]`, msg.data);
+          console.log(msg.data);
         }
       });
       
@@ -80,6 +85,4 @@ async function main() {
 }
 
 main().catch(console.error);
-
-// Keep process alive
 setInterval(() => {}, 1000);
