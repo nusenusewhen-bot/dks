@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.58.2-jammy
+FROM mcr.microsoft.com/playwright:v1.40.0-jammy
 
 WORKDIR /app
 
@@ -13,9 +13,6 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     libappindicator3-1 \
     xdg-utils \
-    python3 \
-    make \
-    g++ \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
