@@ -8,7 +8,6 @@
   "dependencies": {
     "playwright": "^1.58.2",
     "axios": "^1.6.0",
-    "cheerio": "^1.0.0-rc.12",
-    "better-sqlite3": "^9.0.0"
+    "cheerio": "^1.0.0-rc.12"
   }
 }
