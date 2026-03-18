@@ -1,0 +1,29 @@
+FROM mcr.microsoft.com/playwright:v1.40.0-jammy
+
+WORKDIR /app
+
+# Install xvfb for headful mode in container
+RUN apt-get update && apt-get install -y \
+    xvfb \
+    xauth \
+    libgtk-3-0 \
+    libgbm1 \
+    libnss3 \
+    libxss1 \
+    libasound2 \
+    fonts-liberation \
+    libappindicator3-1 \
+    xdg-utils \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY . .
+
+# Use display :99 for xvfb
+ENV DISPLAY=:99
+ENV NODE_ENV=production
+
+CMD Xvfb :99 -screen 0 1920x1080x24 & npx playwright install chromium && node index.js
