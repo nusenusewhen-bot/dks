@@ -1,6 +1,6 @@
 const { workerData, parentPort } = require('worker_threads');
 const { chromium } = require('playwright');
-const { getWorkingProxy, isDirectMode } = require('./proxies');
+const { getWorkingProxy, isDirectMode, getProxyCount } = require('./proxies');
 const { getTempEmail, checkInbox } = require('./email');
 const { generateInsaneFPS, injectFPS } = require('./utils');
 
@@ -14,10 +14,12 @@ async function randomDelay(min, max) {
 
 async function humanType(page, selector, text) {
   await page.click(selector);
-  await randomDelay(100, 300);
-  for (const char of text) {
-    await page.keyboard.press(char);
-    await randomDelay(30, 120);
+  await randomDelay(50, 150);
+  // Type faster - 2-3 chars at once sometimes
+  for (let i = 0; i < text.length; i += Math.random() > 0.7 ? 2 : 1) {
+    const chars = text.slice(i, i + (Math.random() > 0.7 ? 2 : 1));
+    await page.keyboard.insertText(chars);
+    await randomDelay(20, 80);
   }
 }
 
@@ -26,10 +28,10 @@ async function humanClick(page, selector) {
   if (!el) return;
   const box = await el.boundingBox();
   if (box) {
-    const x = box.x + box.width / 2 + (Math.random() * 10 - 5);
-    const y = box.y + box.height / 2 + (Math.random() * 10 - 5);
-    await page.mouse.move(x, y, { steps: 5 + Math.floor(Math.random() * 5) });
-    await randomDelay(50, 200);
+    const x = box.x + box.width / 2 + (Math.random() * 6 - 3);
+    const y = box.y + box.height / 2 + (Math.random() * 6 - 3);
+    await page.mouse.move(x, y, { steps: 3 });
+    await randomDelay(30, 100);
     await page.mouse.click(x, y);
   } else {
     await el.click();
@@ -43,9 +45,9 @@ async function createAccount() {
     const email = await getTempEmail();
     
     if (proxy) {
-      log(`Using proxy: ${proxy} | Email: ${email}`);
+      log(`Proxy: ${proxy} | Pool: ${getProxyCount()} | Email: ${email}`);
     } else {
-      log(`DIRECT CONNECTION | Email: ${email}`);
+      log(`DIRECT | Email: ${email}`);
     }
     
     const launchOptions = {
@@ -120,140 +122,78 @@ async function createAccount() {
     const page = await context.newPage();
     await injectFPS(page, fingerprint);
     
-    await page.route('**/*', async (route, request) => {
-      const headers = {
-        ...request.headers(),
-        'sec-ch-ua': fingerprint.secChUa,
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': `"${fingerprint.platformInfo}"`
-      };
-      await route.continue({ headers });
-    });
-    
-    log('Navigating to Discord...');
-    await page.goto('https://discord.com', { 
-      waitUntil: 'domcontentloaded',
-      timeout: 30000 
-    });
-    
-    for (let i = 0; i < 3; i++) {
-      const x = Math.random() * 1366;
-      const y = Math.random() * 768;
-      await page.mouse.move(x, y, { steps: 5 });
-      await randomDelay(200, 500);
-    }
-    
+    // Skip mouse movements for speed
+    log('Navigating...');
     await page.goto('https://discord.com/register', { 
-      waitUntil: 'networkidle',
-      timeout: 30000 
+      waitUntil: 'domcontentloaded',
+      timeout: 20000 
     });
     
-    await randomDelay(2000, 4000);
+    await randomDelay(1000, 2000);
     
     const blocked = await page.$('text=Sorry, something went wrong') 
       || await page.$('text=You are being rate limited')
-      || await page.$('text=Access denied')
-      || await page.$('text=The web server reported a bad gateway');
+      || await page.$('text=Access denied');
       
     if (blocked) {
-      log('IP/Proxy blocked by Discord - closing');
+      log('Blocked - closing');
       await browser.close();
       return;
     }
     
-    log('Filling registration form...');
-    
+    // Fast form fill
     await humanType(page, 'input[name="email"]', email);
-    await randomDelay(800, 1500);
+    await randomDelay(300, 600);
     
     const username = `User${Math.floor(Math.random() * 10000000)}`;
     await humanType(page, 'input[name="username"]', username);
-    await randomDelay(600, 1200);
+    await randomDelay(300, 600);
     
     const password = `Pass${Math.random().toString(36).slice(2, 10)}!`;
     await humanType(page, 'input[name="password"]', password);
-    await randomDelay(500, 1000);
+    await randomDelay(300, 500);
     
-    await humanClick(page, '[aria-label="Month"]');
-    await randomDelay(200, 400);
-    await humanClick(page, '[data-value="1"]');
-    await randomDelay(300, 600);
+    // Fast date selection
+    await page.selectOption('[aria-label="Month"]', '1');
+    await page.selectOption('[aria-label="Day"]', '15');
+    await page.selectOption('[aria-label="Year"]', '1995');
+    await randomDelay(400, 800);
     
-    await humanClick(page, '[aria-label="Day"]');
-    await randomDelay(200, 400);
-    await humanClick(page, '[data-value="15"]');
-    await randomDelay(300, 600);
-    
-    await humanClick(page, '[aria-label="Year"]');
-    await randomDelay(200, 400);
-    await humanClick(page, '[data-value="1995"]');
-    await randomDelay(800, 1500);
-    
-    log('Submitting form...');
     await humanClick(page, 'button[type="submit"]');
     
-    await randomDelay(4000, 6000);
+    await randomDelay(3000, 5000);
     
-    const captcha = await page.$('iframe[src*="hcaptcha"]') 
-      || await page.$('iframe[src*="recaptcha"]')
-      || await page.$('.h-captcha')
-      || await page.$('[data-sitekey]');
-      
+    // Check results fast
+    const captcha = await page.$('iframe[src*="hcaptcha"]');
     if (captcha) {
-      log('Captcha detected - waiting 45s for solve...');
-      await randomDelay(45000, 50000);
+      log('Captcha - waiting 30s...');
+      await randomDelay(30000, 35000);
     }
     
-    const phoneRequired = await page.$('text=Verify your phone number')
-      || await page.$('input[type="tel"]')
-      || await page.$('text=Phone number');
-      
+    const phoneRequired = await page.$('text=Verify your phone');
     if (phoneRequired) {
-      log('Phone verification required - aborting');
+      log('Phone verify - abort');
       await browser.close();
       return;
     }
     
-    const verifyPage = await page.$('text=Verify your email')
-      || await page.$('text=Check your email');
-      
-    if (verifyPage) {
-      log('Email verification sent');
-    }
-    
-    await randomDelay(3000, 5000);
+    await randomDelay(2000, 3000);
     
     const token = await page.evaluate(() => {
-      return localStorage.getItem('token') 
-        || sessionStorage.getItem('token')
-        || document.cookie.match(/token=([^;]+)/)?.[1];
+      return localStorage.getItem('token') || sessionStorage.getItem('token');
     });
     
     if (token && token.length > 50) {
-      log('Token extracted successfully!');
+      log('Token extracted!');
       parentPort.postMessage({ type: 'token', token, email });
-      
-      setTimeout(async () => {
-        for (let i = 0; i < 5; i++) {
-          const verifyLink = await checkInbox(email);
-          if (verifyLink) {
-            log(`Verification link: ${verifyLink}`);
-            break;
-          }
-          await new Promise(r => setTimeout(r, 30000));
-        }
-      }, 0);
     } else {
-      log('Failed to extract token');
-      const content = await page.content();
-      if (content.includes('captcha')) log('Blocked by captcha');
-      if (content.includes('rate limit')) log('Rate limited');
+      log('No token extracted');
     }
     
     await browser.close();
     
   } catch (err) {
-    log(`Error: ${err.message}`);
+    log(`Error: ${err.message.slice(0, 100)}`);
     parentPort.postMessage({ type: 'error', error: err.message });
     if (browser) await browser.close().catch(() => {});
   }
@@ -263,8 +203,9 @@ async function createAccount() {
   log('Worker started');
   while (true) {
     await createAccount();
-    const delay = isDirectMode() ? 120000 + Math.random() * 60000 : 45000 + Math.random() * 90000;
-    log(`Waiting ${Math.round(delay/1000)}s...`);
+    // Shorter delays for faster cycling
+    const delay = isDirectMode() ? 60000 : 25000 + Math.random() * 35000;
+    log(`Wait ${Math.round(delay/1000)}s...`);
     await randomDelay(delay, delay);
   }
 })();
