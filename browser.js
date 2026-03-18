@@ -37,6 +37,68 @@ async function humanClick(page, selector) {
   }
 }
 
+// Extract token with multiple methods
+async function extractToken(page) {
+  // Method 1: Try localStorage with existence check
+  const token1 = await page.evaluate(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem('token') || null;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  });
+  
+  if (token1 && token1.length > 50) return token1;
+  
+  // Method 2: Try sessionStorage
+  const token2 = await page.evaluate(() => {
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        return window.sessionStorage.getItem('token') || null;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  });
+  
+  if (token2 && token2.length > 50) return token2;
+  
+  // Method 3: Check cookies
+  const cookies = await page.context().cookies();
+  const tokenCookie = cookies.find(c => c.name === 'token' || c.name.includes('auth'));
+  if (tokenCookie && tokenCookie.value.length > 50) return tokenCookie.value;
+  
+  // Method 4: Try to get from window object or webpack
+  const token3 = await page.evaluate(() => {
+    try {
+      // Look for token in various global locations
+      if (window.__INITIAL_STATE__?.token) return window.__INITIAL_STATE__.token;
+      if (window.GLOBAL_ENV?.token) return window.GLOBAL_ENV.token;
+      if (window.DiscordNative?.token) return window.DiscordNative.token;
+      
+      // Try to find in any global var
+      for (let key in window) {
+        try {
+          if (typeof window[key] === 'string' && window[key].length > 50 && window[key].includes('.')) {
+            return window[key];
+          }
+        } catch (e) {}
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  });
+  
+  if (token3 && token3.length > 50) return token3;
+  
+  return null;
+}
+
 async function createAccount() {
   let browser;
   try {
@@ -123,11 +185,11 @@ async function createAccount() {
     
     log('Navigating...');
     await page.goto('https://discord.com/register', { 
-      waitUntil: 'domcontentloaded',
-      timeout: 20000 
+      waitUntil: 'networkidle',
+      timeout: 25000 
     });
     
-    await randomDelay(1000, 2000);
+    await randomDelay(1500, 2500);
     
     const blocked = await page.$('text=Sorry, something went wrong') 
       || await page.$('text=You are being rate limited')
@@ -151,57 +213,73 @@ async function createAccount() {
     await humanType(page, 'input[name="password"]', password);
     await randomDelay(300, 500);
     
-    // FIXED DATE PICKER - Discord uses custom dropdowns now
-    // Click Month dropdown
+    // FIXED DATE PICKER - Discord uses custom dropdowns
     await page.click('[aria-label="Month"]');
     await randomDelay(200, 400);
-    // Select January from the dropdown list
     await page.click('text=January');
     await randomDelay(200, 400);
     
-    // Click Day dropdown
     await page.click('[aria-label="Day"]');
     await randomDelay(200, 400);
-    // Select 15
     await page.click('text=15');
     await randomDelay(200, 400);
     
-    // Click Year dropdown
     await page.click('[aria-label="Year"]');
     await randomDelay(200, 400);
-    // Select 1995
     await page.click('text=1995');
     await randomDelay(400, 800);
     
     await humanClick(page, 'button[type="submit"]');
     
-    await randomDelay(3000, 5000);
+    await randomDelay(4000, 6000);
     
-    // Check results fast
+    // Check for captcha
     const captcha = await page.$('iframe[src*="hcaptcha"]');
     if (captcha) {
-      log('Captcha - waiting 30s...');
+      log('Captcha detected - waiting...');
       await randomDelay(30000, 35000);
     }
     
-    const phoneRequired = await page.$('text=Verify your phone');
+    // Check for phone verification
+    const phoneRequired = await page.$('text=Verify your phone') 
+      || await page.$('input[type="tel"]');
     if (phoneRequired) {
-      log('Phone verify - abort');
+      log('Phone verify required - aborting');
       await browser.close();
       return;
     }
     
-    await randomDelay(2000, 3000);
+    // Wait for navigation or token
+    await randomDelay(3000, 5000);
     
-    const token = await page.evaluate(() => {
-      return localStorage.getItem('token') || sessionStorage.getItem('token');
-    });
+    // Try to extract token multiple times
+    let token = null;
+    for (let i = 0; i < 3; i++) {
+      token = await extractToken(page);
+      if (token) break;
+      await randomDelay(2000, 3000);
+    }
     
     if (token && token.length > 50) {
-      log('Token extracted!');
+      log('Token extracted successfully!');
       parentPort.postMessage({ type: 'token', token, email });
+      
+      // Background email check
+      setTimeout(async () => {
+        for (let i = 0; i < 5; i++) {
+          const verifyLink = await checkInbox(email);
+          if (verifyLink) {
+            log(`Verification: ${verifyLink}`);
+            break;
+          }
+          await new Promise(r => setTimeout(r, 30000));
+        }
+      }, 0);
     } else {
-      log('No token extracted');
+      log('No token found');
+      // Debug - check what page we're on
+      const url = page.url();
+      log(`Current URL: ${url}`);
     }
     
     await browser.close();
@@ -217,7 +295,6 @@ async function createAccount() {
   log('Worker started');
   while (true) {
     await createAccount();
-    // Shorter delays for faster cycling
     const delay = isDirectMode() ? 60000 : 25000 + Math.random() * 35000;
     log(`Wait ${Math.round(delay/1000)}s...`);
     await randomDelay(delay, delay);
