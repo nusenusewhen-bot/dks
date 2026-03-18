@@ -13,88 +13,115 @@ async function randomDelay(min, max) {
 }
 
 async function humanType(page, selector, text) {
-  await page.click(selector);
+  const el = await page.$(selector);
+  if (!el) {
+    log(`Element not found: ${selector}`);
+    return;
+  }
+  await el.click();
+  await randomDelay(100, 250);
+  
+  // Clear existing text first
+  await page.keyboard.press('Control+a');
+  await page.keyboard.press('Delete');
   await randomDelay(50, 150);
-  for (let i = 0; i < text.length; i += Math.random() > 0.7 ? 2 : 1) {
-    const chars = text.slice(i, i + (Math.random() > 0.7 ? 2 : 1));
-    await page.keyboard.insertText(chars);
-    await randomDelay(20, 80);
+  
+  // Type with variable speed
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    await page.keyboard.press(char);
+    
+    // Variable delay: 30-150ms, occasionally longer "thinking" pauses
+    const delay = Math.random() > 0.9 ? 200 + Math.random() * 300 : 30 + Math.random() * 80;
+    await new Promise(r => setTimeout(r, delay));
   }
 }
 
 async function humanClick(page, selector) {
   const el = await page.$(selector);
-  if (!el) return;
-  const box = await el.boundingBox();
-  if (box) {
-    const x = box.x + box.width / 2 + (Math.random() * 6 - 3);
-    const y = box.y + box.height / 2 + (Math.random() * 6 - 3);
-    await page.mouse.move(x, y, { steps: 3 });
-    await randomDelay(30, 100);
-    await page.mouse.click(x, y);
-  } else {
-    await el.click();
+  if (!el) {
+    log(`Click element not found: ${selector}`);
+    return false;
   }
+  
+  const box = await el.boundingBox();
+  if (!box) {
+    log(`Element not visible: ${selector}`);
+    return false;
+  }
+  
+  // Random point within element
+  const x = box.x + 10 + Math.random() * (box.width - 20);
+  const y = box.y + 10 + Math.random() * (box.height - 20);
+  
+  // Move with curve
+  await page.mouse.move(x, y, { steps: 8 + Math.floor(Math.random() * 8) });
+  await randomDelay(80, 200);
+  await page.mouse.down();
+  await randomDelay(20, 80);
+  await page.mouse.up();
+  
+  return true;
 }
 
 // Extract token with multiple methods
 async function extractToken(page) {
-  // Method 1: Try localStorage with existence check
-  const token1 = await page.evaluate(() => {
+  // Wait for page to stabilize
+  await randomDelay(1000, 2000);
+  
+  const token = await page.evaluate(() => {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        return window.localStorage.getItem('token') || null;
-      }
-      return null;
-    } catch (e) {
-      return null;
-    }
-  });
-  
-  if (token1 && token1.length > 50) return token1;
-  
-  // Method 2: Try sessionStorage
-  const token2 = await page.evaluate(() => {
-    try {
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        return window.sessionStorage.getItem('token') || null;
-      }
-      return null;
-    } catch (e) {
-      return null;
-    }
-  });
-  
-  if (token2 && token2.length > 50) return token2;
-  
-  // Method 3: Check cookies
-  const cookies = await page.context().cookies();
-  const tokenCookie = cookies.find(c => c.name === 'token' || c.name.includes('auth'));
-  if (tokenCookie && tokenCookie.value.length > 50) return tokenCookie.value;
-  
-  // Method 4: Try to get from window object or webpack
-  const token3 = await page.evaluate(() => {
-    try {
-      // Look for token in various global locations
-      if (window.__INITIAL_STATE__?.token) return window.__INITIAL_STATE__.token;
-      if (window.GLOBAL_ENV?.token) return window.GLOBAL_ENV.token;
-      if (window.DiscordNative?.token) return window.DiscordNative.token;
+      // Check multiple sources
+      const sources = [
+        () => window.localStorage ? window.localStorage.getItem('token') : null,
+        () => window.sessionStorage ? window.sessionStorage.getItem('token') : null,
+        () => {
+          // Look for token in webpack modules
+          const modules = window.webpackChunkdiscord_app;
+          if (modules) {
+            for (let id in modules) {
+              try {
+                const mod = modules[id];
+                if (mod && mod.exports && mod.exports.default && mod.exports.default.getToken) {
+                  return mod.exports.default.getToken();
+                }
+              } catch (e) {}
+            }
+          }
+          return null;
+        },
+        () => {
+          // Check for user object
+          if (window.DiscordNative && window.DiscordNative.user) {
+            return window.DiscordNative.user.token;
+          }
+          return null;
+        }
+      ];
       
-      // Try to find in any global var
-      for (let key in window) {
+      for (const fn of sources) {
         try {
-          if (typeof window[key] === 'string' && window[key].length > 50 && window[key].includes('.')) {
-            return window[key];
+          const result = fn();
+          if (result && typeof result === 'string' && result.length > 50) {
+            return result;
           }
         } catch (e) {}
       }
+      
       return null;
     } catch (e) {
       return null;
     }
   });
   
-  if (token3 && token3.length > 50) return token3;
+  if (token) return token;
+  
+  // Check cookies as fallback
+  try {
+    const cookies = await page.evaluate(() => document.cookie);
+    const tokenMatch = cookies.match(/token=([^;]+)/);
+    if (tokenMatch) return tokenMatch[1];
+  } catch (e) {}
   
   return null;
 }
@@ -115,7 +142,7 @@ async function createAccount() {
       headless: false,
       args: [
         '--disable-blink-features=AutomationControlled',
-        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-features=IsolateOrigins,site-per-process,InterestCohort',
         '--disable-web-security',
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -125,7 +152,8 @@ async function createAccount() {
         '--no-zygote',
         '--single-process',
         '--disable-gpu',
-        '--window-size=1366,768',
+        '--window-size=1920,1080',
+        '--start-maximized',
         '--disable-background-networking',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
@@ -144,7 +172,10 @@ async function createAccount() {
         '--metrics-recording-only',
         '--safebrowsing-disable-auto-update',
         '--password-store=basic',
-        '--use-mock-keychain'
+        '--use-mock-keychain',
+        '--disable-features=AudioServiceOutOfProcess',
+        '--disable-features=IsolateOrigins',
+        '--disable-features=site-per-process'
       ]
     };
     
@@ -157,8 +188,8 @@ async function createAccount() {
     const fingerprint = generateInsaneFPS();
     
     const context = await browser.newContext({
-      viewport: fingerprint.viewport,
-      screen: fingerprint.screen,
+      viewport: { width: 1920, height: 1080 },
+      screen: { width: 1920, height: 1080 },
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale,
       timezoneId: fingerprint.timezone,
@@ -167,7 +198,7 @@ async function createAccount() {
       colorScheme: 'light',
       extraHTTPHeaders: {
         'Accept-Language': fingerprint.acceptLanguage,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Encoding': 'gzip, deflate, br',
         'DNT': '1',
         'Connection': 'keep-alive',
@@ -181,87 +212,218 @@ async function createAccount() {
     });
     
     const page = await context.newPage();
+    
+    // Inject anti-detection
     await injectFPS(page, fingerprint);
     
-    log('Navigating...');
-    await page.goto('https://discord.com/register', { 
-      waitUntil: 'networkidle',
-      timeout: 25000 
+    // Additional evasion
+    await page.addInitScript(() => {
+      // Override permissions
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' 
+          ? Promise.resolve({ state: Notification.permission, onchange: null })
+          : originalQuery(parameters)
+      );
     });
     
-    await randomDelay(1500, 2500);
+    // Navigate with retry
+    log('Loading Discord...');
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        await page.goto('https://discord.com/', { 
+          waitUntil: 'domcontentloaded',
+          timeout: 20000 
+        });
+        break;
+      } catch (e) {
+        retries--;
+        if (retries === 0) throw e;
+        await randomDelay(2000, 4000);
+      }
+    }
     
+    // Human-like behavior
+    await randomDelay(1500, 3000);
+    
+    // Move mouse randomly
+    for (let i = 0; i < 5; i++) {
+      await page.mouse.move(
+        200 + Math.random() * 800,
+        200 + Math.random() * 600,
+        { steps: 5 }
+      );
+      await randomDelay(200, 500);
+    }
+    
+    // Click register button or navigate directly
+    const registerBtn = await page.$('text=Sign Up') || await page.$('text=Register');
+    if (registerBtn) {
+      await humanClick(page, 'text=Sign Up');
+      await randomDelay(2000, 4000);
+    } else {
+      await page.goto('https://discord.com/register', {
+        waitUntil: 'networkidle',
+        timeout: 25000
+      });
+    }
+    
+    await randomDelay(2000, 4000);
+    
+    // Check for blocks
     const blocked = await page.$('text=Sorry, something went wrong') 
       || await page.$('text=You are being rate limited')
-      || await page.$('text=Access denied');
+      || await page.$('text=Access denied')
+      || await page.$('text=Verify you are human');
       
     if (blocked) {
-      log('Blocked - closing');
+      const text = await blocked.textContent();
+      log(`Blocked: ${text}`);
       await browser.close();
       return;
     }
     
-    // Fast form fill
+    // Check if captcha appears immediately
+    const captchaImmediate = await page.$('iframe[src*="hcaptcha"]') 
+      || await page.$('iframe[src*="recaptcha"]')
+      || await page.$('[data-sitekey]');
+    
+    if (captchaImmediate) {
+      log('Immediate captcha - bot detected');
+      // Try to solve or wait
+      await randomDelay(35000, 45000);
+    }
+    
+    log('Filling form...');
+    
+    // Fill email
     await humanType(page, 'input[name="email"]', email);
-    await randomDelay(300, 600);
-    
-    const username = `User${Math.floor(Math.random() * 10000000)}`;
-    await humanType(page, 'input[name="username"]', username);
-    await randomDelay(300, 600);
-    
-    const password = `Pass${Math.random().toString(36).slice(2, 10)}!`;
-    await humanType(page, 'input[name="password"]', password);
-    await randomDelay(300, 500);
-    
-    // FIXED DATE PICKER - Discord uses custom dropdowns
-    await page.click('[aria-label="Month"]');
-    await randomDelay(200, 400);
-    await page.click('text=January');
-    await randomDelay(200, 400);
-    
-    await page.click('[aria-label="Day"]');
-    await randomDelay(200, 400);
-    await page.click('text=15');
-    await randomDelay(200, 400);
-    
-    await page.click('[aria-label="Year"]');
-    await randomDelay(200, 400);
-    await page.click('text=1995');
     await randomDelay(400, 800);
     
-    await humanClick(page, 'button[type="submit"]');
+    // Fill username
+    const username = `User${Math.floor(Math.random() * 100000000)}`;
+    await humanType(page, 'input[name="username"]', username);
+    await randomDelay(400, 800);
     
-    await randomDelay(4000, 6000);
+    // Fill password
+    const password = `Pass${Math.random().toString(36).slice(2, 12)}!@`;
+    await humanType(page, 'input[name="password"]', password);
+    await randomDelay(400, 800);
     
-    // Check for captcha
-    const captcha = await page.$('iframe[src*="hcaptcha"]');
+    // Date of birth - Discord uses custom dropdowns
+    log('Setting DOB...');
+    
+    // Month
+    await humanClick(page, '[aria-label="Month"]');
+    await randomDelay(300, 600);
+    await humanClick(page, 'text=January');
+    await randomDelay(300, 600);
+    
+    // Day
+    await humanClick(page, '[aria-label="Day"]');
+    await randomDelay(300, 600);
+    await humanClick(page, 'text=15');
+    await randomDelay(300, 600);
+    
+    // Year
+    await humanClick(page, '[aria-label="Year"]');
+    await randomDelay(300, 600);
+    await humanClick(page, 'text=1995');
+    await randomDelay(600, 1200);
+    
+    // Verify values are set
+    const dobSet = await page.evaluate(() => {
+      const month = document.querySelector('[aria-label="Month"]')?.textContent;
+      const day = document.querySelector('[aria-label="Day"]')?.textContent;
+      const year = document.querySelector('[aria-label="Year"]')?.textContent;
+      return { month, day, year };
+    });
+    log(`DOB: ${dobSet.month} ${dobSet.day}, ${dobSet.year}`);
+    
+    // Check terms checkbox if exists
+    const terms = await page.$('input[type="checkbox"]');
+    if (terms) {
+      await humanClick(page, 'input[type="checkbox"]');
+      await randomDelay(300, 600);
+    }
+    
+    // Submit form
+    log('Submitting...');
+    const submitSuccess = await humanClick(page, 'button[type="submit"]');
+    
+    if (!submitSuccess) {
+      log('Submit button not found, trying Enter key');
+      await page.keyboard.press('Enter');
+    }
+    
+    await randomDelay(5000, 8000);
+    
+    // Check for errors
+    const errorEl = await page.$('[class*="error"]') 
+      || await page.$('text=Invalid')
+      || await page.$('text=required')
+      || await page.$('text=incorrect');
+    
+    if (errorEl) {
+      const errorText = await errorEl.textContent();
+      log(`Form error: ${errorText}`);
+    }
+    
+    // Check for captcha after submit
+    const captcha = await page.$('iframe[src*="hcaptcha"]') 
+      || await page.$('iframe[src*="recaptcha"]')
+      || await page.$('[data-sitekey]')
+      || await page.$('text=Verify you are human');
+    
     if (captcha) {
-      log('Captcha detected - waiting...');
-      await randomDelay(30000, 35000);
+      log('Post-submit captcha - waiting 45s...');
+      await randomDelay(45000, 50000);
     }
     
     // Check for phone verification
     const phoneRequired = await page.$('text=Verify your phone') 
-      || await page.$('input[type="tel"]');
+      || await page.$('input[type="tel"]')
+      || await page.$('text=Phone number');
+    
     if (phoneRequired) {
-      log('Phone verify required - aborting');
+      log('Phone verification required');
       await browser.close();
       return;
     }
     
-    // Wait for navigation or token
-    await randomDelay(3000, 5000);
+    // Wait for redirect or success
+    await randomDelay(4000, 6000);
     
-    // Try to extract token multiple times
+    // Check current URL
+    const currentUrl = page.url();
+    log(`URL after submit: ${currentUrl}`);
+    
+    // If still on register, something went wrong
+    if (currentUrl.includes('/register')) {
+      // Check for any visible errors
+      const pageText = await page.evaluate(() => document.body.innerText);
+      if (pageText.includes('captcha') || pageText.includes('CAPTCHA')) {
+        log('Captcha blocking registration');
+      } else if (pageText.includes('rate limit')) {
+        log('Rate limited');
+      } else {
+        log('Still on register page - possible failure');
+      }
+    }
+    
+    // Try to extract token
+    log('Extracting token...');
     let token = null;
-    for (let i = 0; i < 3; i++) {
+    
+    for (let attempt = 0; attempt < 5; attempt++) {
       token = await extractToken(page);
       if (token) break;
-      await randomDelay(2000, 3000);
+      await randomDelay(2000, 4000);
     }
     
     if (token && token.length > 50) {
-      log('Token extracted successfully!');
+      log('Token extracted!');
       parentPort.postMessage({ type: 'token', token, email });
       
       // Background email check
@@ -276,16 +438,24 @@ async function createAccount() {
         }
       }, 0);
     } else {
-      log('No token found');
-      // Debug - check what page we're on
-      const url = page.url();
-      log(`Current URL: ${url}`);
+      log('No token extracted');
+      
+      // Debug: take screenshot of final state
+      const pageContent = await page.evaluate(() => {
+        return {
+          url: window.location.href,
+          hasLocalStorage: !!window.localStorage,
+          hasSessionStorage: !!window.sessionStorage,
+          bodyText: document.body.innerText.slice(0, 500)
+        };
+      });
+      log(`Debug: ${JSON.stringify(pageContent)}`);
     }
     
     await browser.close();
     
   } catch (err) {
-    log(`Error: ${err.message.slice(0, 100)}`);
+    log(`Error: ${err.message.slice(0, 150)}`);
     parentPort.postMessage({ type: 'error', error: err.message });
     if (browser) await browser.close().catch(() => {});
   }
@@ -295,7 +465,7 @@ async function createAccount() {
   log('Worker started');
   while (true) {
     await createAccount();
-    const delay = isDirectMode() ? 60000 : 25000 + Math.random() * 35000;
+    const delay = isDirectMode() ? 90000 : 30000 + Math.random() * 30000;
     log(`Wait ${Math.round(delay/1000)}s...`);
     await randomDelay(delay, delay);
   }
