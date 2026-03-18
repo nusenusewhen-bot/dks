@@ -1,136 +1,137 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
+const https = require('https');
 
 let proxyPool = [];
 let lastUpdate = 0;
+let directMode = false;
 
 const PROXY_SOURCES = [
   'https://sslproxies.org/',
   'https://free-proxy-list.net/',
   'https://www.us-proxy.net/',
-  'https://proxylist.geonode.com/api/proxy-list?limit=50&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps',
-  'https://www.proxy-list.download/api/v1/get?type=http',
-  'https://www.proxy-list.download/api/v1/get?type=https'
+  'https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all',
+  'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
+  'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt',
+  'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt'
 ];
+
+async function testProxy(proxy) {
+  return new Promise((resolve) => {
+    const [host, port] = proxy.split(':');
+    const timeout = setTimeout(() => resolve(null), 5000);
+    
+    const req = https.get('https://discord.com/api/v9/gateway', {
+      host: host,
+      port: parseInt(port),
+      method: 'GET',
+      rejectUnauthorized: false,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Host': 'discord.com'
+      }
+    }, (res) => {
+      clearTimeout(timeout);
+      if (res.statusCode === 200) {
+        resolve(proxy);
+      } else {
+        resolve(null);
+      }
+    });
+    
+    req.on('error', () => {
+      clearTimeout(timeout);
+      resolve(null);
+    });
+    
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
 
 async function scrapeProxies() {
   const newProxies = [];
   
-  // Try all sources
   for (const url of PROXY_SOURCES) {
     try {
-      if (url.includes('geonode')) {
-        // API format
-        const { data } = await axios.get(url, { timeout: 15000 });
-        if (data && data.data) {
-          data.data.forEach(p => {
-            if (p.protocols.includes('http') || p.protocols.includes('https')) {
-              newProxies.push(`${p.ip}:${p.port}`);
-            }
-          });
-        }
-      } else if (url.includes('proxy-list.download')) {
-        // Plain text format
-        const { data } = await axios.get(url, { timeout: 15000 });
-        const lines = data.split('\n').filter(line => line.includes(':'));
+      if (url.includes('raw.githubusercontent.com') || url.includes('proxyscrape')) {
+        const { data } = await axios.get(url, { timeout: 10000 });
+        const lines = data.split('\n').filter(line => line.includes(':') && !line.startsWith('#'));
         lines.forEach(line => {
-          const [ip, port] = line.trim().split(':');
-          if (ip && port) newProxies.push(`${ip}:${port}`);
+          const clean = line.trim().replace('\r', '');
+          if (clean) newProxies.push(clean);
         });
       } else {
-        // HTML table format
         const { data } = await axios.get(url, { 
-          timeout: 15000,
+          timeout: 10000,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
         });
         const $ = cheerio.load(data);
         
-        $('table tbody tr, .table tbody tr').each((i, row) => {
+        $('table tbody tr').each((i, row) => {
           const cols = $(row).find('td');
           if (cols.length > 6) {
             const ip = $(cols[0]).text().trim();
             const port = $(cols[1]).text().trim();
             const https = $(cols[6]).text().trim().toLowerCase();
-            const anonymity = $(cols[4] || cols[5]).text().trim().toLowerCase();
-            
-            if (ip && port && (https === 'yes' || https === 'true')) {
-              // Prefer elite/anonymous proxies
-              if (anonymity.includes('elite') || anonymity.includes('anonymous') || anonymity.includes('high')) {
-                newProxies.unshift(`${ip}:${port}`); // Add to front (priority)
-              } else {
-                newProxies.push(`${ip}:${port}`);
-              }
+            if (ip && port && https === 'yes') {
+              newProxies.push(`${ip}:${port}`);
             }
           }
         });
       }
     } catch (e) {
-      console.log(`[PROXY] Source failed: ${url.split('/')[2]}`);
+      console.log(`[PROXY] Failed: ${url.split('/')[2] || url.split('/')[0]}`);
     }
   }
   
-  console.log(`[PROXY] Scraped ${newProxies.length} total, testing...`);
+  const unique = [...new Set(newProxies)].slice(0, 50);
+  console.log(`[PROXY] Scraped ${unique.length} unique, testing...`);
   
-  // Test proxies (parallel with limit)
   const working = [];
-  const testLimit = 20; // Test first 20 only
   
-  const testProxy = async (proxy) => {
-    try {
-      const [host, port] = proxy.split(':');
-      await axios.get('https://discord.com/api/v9/gateway', {
-        proxy: { host, port: parseInt(port), protocol: 'http' },
-        timeout: 10000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      return proxy;
-    } catch (e) {
-      return null;
+  for (const proxy of unique) {
+    const result = await testProxy(proxy);
+    if (result) {
+      working.push(result);
+      if (working.length >= 5) break;
     }
-  };
-  
-  // Test in batches of 5
-  for (let i = 0; i < Math.min(newProxies.length, testLimit); i += 5) {
-    const batch = newProxies.slice(i, i + 5);
-    const results = await Promise.all(batch.map(testProxy));
-    results.forEach(p => { if (p) working.push(p); });
-    
-    // Stop if we have enough
-    if (working.length >= 5) break;
   }
   
   proxyPool = working;
   lastUpdate = Date.now();
-  console.log(`[PROXY] ${working.length} working proxies found`);
   
-  // If still 0, use direct connection fallback for testing
   if (working.length === 0) {
-    console.log('[PROXY] No working proxies - will try direct connection');
+    console.log('[PROXY] No working proxies - switching to DIRECT mode');
+    directMode = true;
+  } else {
+    console.log(`[PROXY] ${working.length} working proxies`);
+    directMode = false;
   }
 }
 
 async function getWorkingProxy() {
-  // Refresh if empty or old
-  if (proxyPool.length === 0 || Date.now() - lastUpdate > 180000) {
+  if (Date.now() - lastUpdate > 120000 || proxyPool.length === 0) {
     await scrapeProxies();
   }
   
-  // Return random working proxy
-  if (proxyPool.length > 0) {
-    return proxyPool[Math.floor(Math.random() * proxyPool.length)];
+  if (directMode || proxyPool.length === 0) {
+    return null;
   }
   
-  // Fallback: return null (direct connection)
-  return null;
+  return proxyPool[Math.floor(Math.random() * proxyPool.length)];
 }
 
-// Initial scrape
+function isDirectMode() {
+  return directMode;
+}
+
 (async function init() {
   await scrapeProxies();
 })();
 
-module.exports = { getWorkingProxy, scrapeProxies };
+module.exports = { getWorkingProxy, scrapeProxies, isDirectMode };
