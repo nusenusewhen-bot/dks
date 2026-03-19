@@ -1,4 +1,3 @@
-// Worker main loop - NO top-level await
 function main() {
   log('Worker started');
   
