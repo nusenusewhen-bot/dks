@@ -1,7 +1,5 @@
-const sharp = require('sharp');
 const axios = require('axios');
 
-// Local log function to avoid scope issues
 function log(msg) {
   console.log(`[CAPTCHA] ${msg}`);
 }
@@ -39,23 +37,42 @@ class UltimateCaptchaSolver {
 
   async detectChallengeType(frame) {
     const prompt = await frame.evaluate(() => {
-      const text = document.querySelector('.prompt-text, .challenge-text, .hcaptcha-challenge-text')?.textContent || '';
-      return text.toLowerCase();
+      const selectors = [
+        '.prompt-text',
+        '.challenge-text',
+        '.hcaptcha-challenge-text',
+        '.task-description',
+        '[data-testid="challenge-prompt"]',
+        'h2',
+        'h3',
+        '.text'
+      ];
+      
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent.length > 10) {
+          return el.textContent;
+        }
+      }
+      return '';
     });
 
-    if (prompt.includes('drag') && prompt.includes('piece')) {
+    const lower = prompt.toLowerCase();
+    log(`Prompt: ${prompt.slice(0, 100)}`);
+
+    if (lower.includes('drag') && lower.includes('piece')) {
       return this.challengeTypes.PUZZLE_DRAG;
     }
-    if (prompt.includes('slide') || (prompt.includes('drag') && prompt.includes('slider'))) {
+    if (lower.includes('slide') || (lower.includes('drag') && lower.includes('slider'))) {
       return this.challengeTypes.PUZZLE_SLIDE;
     }
-    if (prompt.includes('which') || prompt.includes('what') || prompt.includes('doesn\'t') || prompt.includes('without')) {
+    if (lower.includes('which') || lower.includes('what') || lower.includes('doesn\'t') || lower.includes('without') || lower.includes('choose')) {
       return this.challengeTypes.LOGICAL_QUESTION;
     }
-    if (prompt.includes('fill') && prompt.includes('space')) {
+    if (lower.includes('fill') && lower.includes('space')) {
       return this.challengeTypes.SPATIAL_REASONING;
     }
-    if (prompt.includes('click') || prompt.includes('select') || prompt.includes('images')) {
+    if (lower.includes('click') || lower.includes('select') || lower.includes('images') || lower.includes('pictures')) {
       return this.challengeTypes.IMAGE_CLASSIFICATION;
     }
     
@@ -63,15 +80,67 @@ class UltimateCaptchaSolver {
   }
 
   async solveImageClassification(frame) {
-    const images = await frame.$$('.task-image, .challenge-image, [data-index]');
-    log(`Found ${images.length} images`);
+    log('Solving image classification...');
     
-    for (let i = 0; i < images.length; i++) {
-      await new Promise(r => setTimeout(r, 800 + Math.random() * 700));
+    // Try multiple selector strategies
+    const selectors = [
+      '.task-image',
+      '.challenge-image',
+      '.h-captcha-image',
+      '.tile',
+      '[data-testid="challenge-image"]',
+      'img[src*="hcaptcha"]',
+      '.grid img',
+      '.images img',
+      '[class*="image"]',
+      '[class*="tile"]',
+      'div[role="button"]',
+      '.box',
+      '.item'
+    ];
+
+    let images = [];
+    
+    for (const selector of selectors) {
+      images = await frame.$$(selector);
+      if (images.length > 0) {
+        log(`Found ${images.length} images with selector: ${selector}`);
+        break;
+      }
+    }
+
+    if (images.length === 0) {
+      // Ultimate fallback - get all clickable elements
+      log('Using fallback click strategy');
+      const clickable = await frame.$$('div, span, img, [role="button"], button, [tabindex]');
       
-      if (Math.random() > 0.5) {
-        await images[i].click();
-        await new Promise(r => setTimeout(r, 300 + Math.random() * 300));
+      // Filter visible elements
+      const visible = [];
+      for (const el of clickable.slice(0, 20)) {
+        const box = await el.boundingBox();
+        if (box && box.width > 50 && box.height > 50) {
+          visible.push(el);
+        }
+      }
+      
+      log(`Found ${visible.length} visible clickable elements`);
+      
+      // Click 2-4 random elements
+      const toClick = Math.min(Math.floor(Math.random() * 3) + 2, visible.length);
+      for (let i = 0; i < toClick; i++) {
+        const idx = Math.floor(Math.random() * visible.length);
+        await visible[idx].click();
+        await new Promise(r => setTimeout(r, 600 + Math.random() * 600));
+      }
+    } else {
+      // Click 2-4 random images
+      const toClick = Math.min(Math.floor(Math.random() * 3) + 2, images.length);
+      log(`Clicking ${toClick} images`);
+      
+      for (let i = 0; i < toClick; i++) {
+        const idx = Math.floor(Math.random() * images.length);
+        await images[idx].click();
+        await new Promise(r => setTimeout(r, 700 + Math.random() * 500));
       }
     }
 
@@ -82,19 +151,50 @@ class UltimateCaptchaSolver {
   async solvePuzzleDrag(frame, page) {
     log('Solving puzzle drag...');
     
-    const pieces = await frame.$$('.puzzle-piece, .drag-piece, .draggable, .piece');
-    log(`${pieces.length} pieces found`);
-    
-    for (const piece of pieces) {
-      const targets = await frame.$$('.drop-zone, .puzzle-slot, .target-zone, .slot');
-      if (targets.length > 0) {
-        const pieceBox = await piece.boundingBox();
-        const targetBox = await targets[0].boundingBox();
-        
-        if (pieceBox && targetBox) {
-          await this.performDrag(frame, pieceBox, targetBox);
-          await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
-        }
+    const selectors = [
+      '.puzzle-piece',
+      '.drag-piece',
+      '.draggable',
+      '.piece',
+      '[draggable="true"]',
+      '.tile',
+      '.block'
+    ];
+
+    let pieces = [];
+    for (const selector of selectors) {
+      pieces = await frame.$$(selector);
+      if (pieces.length > 0) {
+        log(`Found ${pieces.length} pieces with: ${selector}`);
+        break;
+      }
+    }
+
+    const targetSelectors = [
+      '.drop-zone',
+      '.puzzle-slot',
+      '.target-zone',
+      '.slot',
+      '.target',
+      '[class*="drop"]',
+      '[class*="target"]'
+    ];
+
+    let targets = [];
+    for (const selector of targetSelectors) {
+      targets = await frame.$$(selector);
+      if (targets.length > 0) break;
+    }
+
+    log(`Pieces: ${pieces.length}, Targets: ${targets.length}`);
+
+    for (let i = 0; i < Math.min(pieces.length, targets.length); i++) {
+      const pieceBox = await pieces[i].boundingBox();
+      const targetBox = await targets[i]?.boundingBox();
+      
+      if (pieceBox && targetBox) {
+        await this.performDrag(frame, pieceBox, targetBox);
+        await new Promise(r => setTimeout(r, 600 + Math.random() * 600));
       }
     }
 
@@ -105,8 +205,21 @@ class UltimateCaptchaSolver {
   async solvePuzzleSlide(frame, page) {
     log('Solving slider...');
     
-    const slider = await frame.$('.slider, .puzzle-slider');
-    const track = await frame.$('.slider-track, .track');
+    const sliderSelectors = ['.slider', '.puzzle-slider', '.handle', '.knob', '[class*="slider"]'];
+    const trackSelectors = ['.slider-track', '.track', '.rail', '.bar', '[class*="track"]'];
+
+    let slider = null;
+    let track = null;
+
+    for (const sel of sliderSelectors) {
+      slider = await frame.$(sel);
+      if (slider) break;
+    }
+
+    for (const sel of trackSelectors) {
+      track = await frame.$(sel);
+      if (track) break;
+    }
     
     if (!slider || !track) {
       log('Slider elements not found');
@@ -119,6 +232,8 @@ class UltimateCaptchaSolver {
     if (!sliderBox || !trackBox) return false;
 
     const distance = trackBox.width - sliderBox.width;
+    log(`Sliding ${distance}px`);
+    
     await this.performSlide(frame, sliderBox, distance);
     
     await this.clickVerify(frame);
@@ -137,9 +252,9 @@ class UltimateCaptchaSolver {
       }
     }, { x: startX, y: startY });
 
-    await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
+    await new Promise(r => setTimeout(r, 150 + Math.random() * 200));
 
-    const steps = 20;
+    const steps = 25;
     for (let i = 0; i <= steps; i++) {
       const progress = i / steps;
       const eased = 1 - Math.pow(1 - progress, 3);
@@ -152,7 +267,7 @@ class UltimateCaptchaSolver {
         }
       }, { x: currentX, y: startY });
 
-      await new Promise(r => setTimeout(r, 20 + Math.random() * 30));
+      await new Promise(r => setTimeout(r, 15 + Math.random() * 25));
     }
 
     await frame.evaluate(({x, y}) => {
@@ -164,21 +279,49 @@ class UltimateCaptchaSolver {
   }
 
   async solveLogicalQuestion(frame) {
+    log('Solving logical question...');
+    
     const question = await frame.evaluate(() => {
-      return document.querySelector('.prompt-text, .question-text')?.textContent || '';
+      const selectors = ['.prompt-text', '.question-text', 'h2', 'h3', '.challenge-text', '.text'];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent.length > 10) return el.textContent;
+      }
+      return '';
     });
 
     log(`Question: ${question}`);
     
     const answer = this.parseLogicalQuestion(question);
-    const options = await frame.$$('.option, .answer-option, .choice, [role="button"]');
+    
+    const optionSelectors = [
+      '.option',
+      '.answer-option',
+      '.choice',
+      '[role="button"]',
+      'button',
+      '.tile',
+      '.box',
+      '.item',
+      'div[tabindex]'
+    ];
+
+    let options = [];
+    for (const sel of optionSelectors) {
+      options = await frame.$$(sel);
+      if (options.length >= 2) {
+        log(`Found ${options.length} options with: ${sel}`);
+        break;
+      }
+    }
     
     for (const option of options) {
       const text = await option.evaluate(el => el.textContent.toLowerCase());
       
       if (this.matchesAnswer(text, answer)) {
+        log(`Clicking answer: ${text.slice(0, 30)}`);
         await option.click();
-        await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+        await new Promise(r => setTimeout(r, 600 + Math.random() * 600));
         break;
       }
     }
@@ -190,22 +333,37 @@ class UltimateCaptchaSolver {
   parseLogicalQuestion(question) {
     const lower = question.toLowerCase();
     
-    if (lower.includes('legs') && (lower.includes('doesn\'t') || lower.includes('without') || lower.includes('no '))) {
-      return { type: 'animal', feature: 'no_legs', examples: ['snake', 'fish', 'worm', 'eel'] };
+    if ((lower.includes('legs') || lower.includes('leg')) && 
+        (lower.includes('doesn\'t') || lower.includes('without') || lower.includes('no ') || lower.includes('none'))) {
+      return { type: 'animal', feature: 'no_legs', examples: ['snake', 'fish', 'worm', 'eel', 'jellyfish', 'whale', 'dolphin'] };
     }
     
-    if (lower.includes('fly') && (lower.includes('can\'t') || lower.includes('cannot'))) {
-      return { type: 'animal', feature: 'no_fly', examples: ['penguin', 'ostrich', 'chicken', 'kiwi'] };
+    if (lower.includes('fly') && (lower.includes('can\'t') || lower.includes('cannot') || lower.includes('doesn\'t'))) {
+      return { type: 'animal', feature: 'no_fly', examples: ['penguin', 'ostrich', 'chicken', 'kiwi', 'emu'] };
     }
     
-    if (lower.includes('living') || lower.includes('alive')) {
-      return { type: 'object', feature: 'non_living', examples: ['rock', 'car', 'table', 'chair'] };
+    if (lower.includes('swim') && (lower.includes('can\'t') || lower.includes('cannot'))) {
+      return { type: 'animal', feature: 'no_swim', examples: ['elephant', 'giraffe', 'kangaroo', 'monkey', 'human'] };
+    }
+    
+    if (lower.includes('living') || lower.includes('alive') || lower.includes('life')) {
+      return { type: 'object', feature: 'non_living', examples: ['rock', 'car', 'table', 'chair', 'computer', 'phone', 'book'] };
+    }
+
+    if (lower.includes('eat') || lower.includes('food')) {
+      return { type: 'object', feature: 'no_eat', examples: ['rock', 'paper', 'plastic', 'metal', 'stone'] };
+    }
+
+    if (lower.includes('breathe') || lower.includes('breath')) {
+      return { type: 'object', feature: 'no_breathe', examples: ['rock', 'car', 'table', 'water', 'sand'] };
     }
 
     return { type: 'unknown', feature: 'unknown', examples: [] };
   }
 
   matchesAnswer(text, answer) {
+    if (!text || !answer.examples) return false;
+    
     for (const example of answer.examples) {
       if (text.includes(example)) return true;
     }
@@ -213,10 +371,41 @@ class UltimateCaptchaSolver {
   }
 
   async solveSpatialReasoning(frame, page) {
-    log('Spatial reasoning...');
+    log('Solving spatial reasoning...');
     
-    const pieces = await frame.$$('.available-piece, .draggable-piece, .piece');
-    const cells = await frame.$$('.grid-cell, .pattern-cell, .cell');
+    const pieceSelectors = [
+      '.available-piece',
+      '.draggable-piece',
+      '.piece',
+      '.block',
+      '.tile',
+      '[draggable="true"]'
+    ];
+
+    const cellSelectors = [
+      '.grid-cell',
+      '.pattern-cell',
+      '.cell',
+      '.slot',
+      '.space',
+      '.empty',
+      '[class*="cell"]'
+    ];
+
+    let pieces = [];
+    let cells = [];
+
+    for (const sel of pieceSelectors) {
+      pieces = await frame.$$(sel);
+      if (pieces.length > 0) break;
+    }
+
+    for (const sel of cellSelectors) {
+      cells = await frame.$$(sel);
+      if (cells.length > 0) break;
+    }
+
+    log(`Pieces: ${pieces.length}, Cells: ${cells.length}`);
     
     for (let i = 0; i < Math.min(pieces.length, cells.length); i++) {
       const pieceBox = await pieces[i].boundingBox();
@@ -224,7 +413,7 @@ class UltimateCaptchaSolver {
       
       if (pieceBox && cellBox) {
         await this.performDrag(frame, pieceBox, cellBox);
-        await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+        await new Promise(r => setTimeout(r, 600 + Math.random() * 600));
       }
     }
 
@@ -236,19 +425,38 @@ class UltimateCaptchaSolver {
     await frame.evaluate(({fromX, fromY, toX, toY}) => {
       const startEl = document.elementFromPoint(fromX, fromY);
       if (startEl) {
-        startEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: fromX, clientY: fromY }));
+        startEl.dispatchEvent(new MouseEvent('mousedown', { 
+          bubbles: true, 
+          clientX: fromX, 
+          clientY: fromY,
+          button: 0
+        }));
       }
       
-      const steps = 10;
+      const steps = 15;
       for (let i = 1; i <= steps; i++) {
         const x = fromX + (toX - fromX) * (i / steps);
         const y = fromY + (toY - fromY) * (i / steps);
-        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+        document.dispatchEvent(new MouseEvent('mousemove', { 
+          bubbles: true, 
+          clientX: x, 
+          clientY: y 
+        }));
       }
       
       const endEl = document.elementFromPoint(toX, toY);
       if (endEl) {
-        endEl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: toX, clientY: toY }));
+        endEl.dispatchEvent(new MouseEvent('mouseup', { 
+          bubbles: true, 
+          clientX: toX, 
+          clientY: toY,
+          button: 0
+        }));
+        endEl.dispatchEvent(new MouseEvent('click', { 
+          bubbles: true, 
+          clientX: toX, 
+          clientY: toY 
+        }));
       }
     }, {
       fromX: from.x + from.width/2,
@@ -260,25 +468,90 @@ class UltimateCaptchaSolver {
 
   async clickVerify(frame) {
     await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
-    const verify = await frame.$('.button-submit, .submit-button, [type="submit"]');
-    if (verify) await verify.click();
+    
+    const verifySelectors = [
+      '.button-submit',
+      '.submit-button',
+      '[type="submit"]',
+      '.verify-button',
+      '.check-button',
+      'button:has-text("Verify")',
+      'button:has-text("Submit")',
+      'button:has-text("Check")',
+      '.button:has-text("Go")',
+      '[class*="submit"]',
+      '[class*="verify"]'
+    ];
+
+    let verifyBtn = null;
+    for (const sel of verifySelectors) {
+      verifyBtn = await frame.$(sel);
+      if (verifyBtn) {
+        log(`Found verify button: ${sel}`);
+        break;
+      }
+    }
+
+    if (verifyBtn) {
+      await verifyBtn.click();
+    } else {
+      // Try clicking by coordinates (bottom center of challenge)
+      const box = await frame.boundingBox();
+      if (box) {
+        await frame.evaluate(({x, y}) => {
+          const el = document.elementFromPoint(x, y);
+          if (el) el.click();
+        }, { x: box.x + box.width/2, y: box.y + box.height - 50 });
+      }
+    }
   }
 
   async checkSuccess(frame) {
-    await new Promise(r => setTimeout(r, 3000 + Math.random() * 2000));
+    await new Promise(r => setTimeout(r, 4000 + Math.random() * 2000));
+    
     const stillThere = await frame.evaluate(() => {
-      return !!document.querySelector('.hcaptcha-challenge, .challenge-container, .challenge');
+      const indicators = [
+        '.hcaptcha-challenge',
+        '.challenge-container',
+        '.challenge',
+        '.h-captcha',
+        '.task-image',
+        '.puzzle-piece',
+        '[class*="challenge"]'
+      ];
+      
+      for (const sel of indicators) {
+        if (document.querySelector(sel)) return true;
+      }
+      return false;
     });
-    return !stillThere;
+    
+    const success = !stillThere;
+    log(success ? 'Challenge completed!' : 'Still on challenge');
+    return success;
   }
 
   async solveGeneric(frame, page) {
-    const interactive = await frame.$$('button, [role="button"], .clickable');
-    if (interactive.length > 0) {
-      const random = interactive[Math.floor(Math.random() * interactive.length)];
-      await random.click();
+    log('Using generic solver...');
+    
+    // Click random interactive elements
+    const elements = await frame.$$('div, span, img, button, [role="button"], [tabindex]');
+    const visible = [];
+    
+    for (const el of elements.slice(0, 15)) {
+      const box = await el.boundingBox();
+      if (box && box.width > 40 && box.height > 40) {
+        visible.push(el);
+      }
+    }
+    
+    const toClick = Math.min(Math.floor(Math.random() * 3) + 2, visible.length);
+    for (let i = 0; i < toClick; i++) {
+      const idx = Math.floor(Math.random() * visible.length);
+      await visible[idx].click();
       await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
     }
+    
     await this.clickVerify(frame);
     return await this.checkSuccess(frame);
   }
