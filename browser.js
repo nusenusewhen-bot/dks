@@ -170,9 +170,7 @@ async function createAccount() {
     
     const token = await page.evaluate(() => {
       try {
-        return localStorage.getItem('token') || 
-               sessionStorage.getItem('token') || 
-               document.cookie.match(/token=([^;]+)/)?.[1];
+        return localStorage.getItem('token') || sessionStorage.getItem('token') || document.cookie.match(/token=([^;]+)/)?.[1];
       } catch (e) { 
         return null; 
       }
