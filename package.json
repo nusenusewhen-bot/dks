@@ -8,12 +8,6 @@
   "dependencies": {
     "playwright": "^1.40.0",
     "axios": "^1.6.2",
-    "cheerio": "^1.0.0-rc.12",
-    "canvas": "^2.11.2"
-  },
-  "overrides": {
-    "glob": "^10.3.10",
-    "rimraf": "^5.0.5",
-    "tar": "^7.0.1"
+    "cheerio": "^1.0.0-rc.12"
   }
 }
