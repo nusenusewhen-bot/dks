@@ -140,4 +140,76 @@ async function createAccount() {
     let captchaAttempts = 0;
     const maxCaptchaAttempts = 3;
     
-    while (captchaAttempts
+    while (captchaAttempts < maxCaptchaAttempts) {
+      const captchaFrame = await page.$('iframe[src*="hcaptcha"]');
+      if (!captchaFrame) break;
+      
+      log(`Captcha detected (attempt ${captchaAttempts + 1}/${maxCaptchaAttempts})`);
+      const frame = await captchaFrame.contentFrame();
+      const solver = new CaptchaSolver(page, session);
+      const solved = await solver.solve(frame);
+      
+      if (solved) {
+        log('Captcha solved successfully');
+        break;
+      } else {
+        log('Captcha attempt failed');
+        captchaAttempts++;
+        await delay(3000, 5000);
+      }
+    }
+    
+    await delay(3000, 5000);
+    
+    const phone = await page.$('text=Verify your phone') || await page.$('input[type="tel"]');
+    if (phone) {
+      log('Phone verification required - aborting');
+      await browser.close();
+      return;
+    }
+    
+    const token = await page.evaluate(() => {
+      try {
+        return localStorage.getItem('token') || sessionStorage.getItem('token') || document.cookie.match(/token=([^;]+)/)?.[1];
+      } catch (e) { 
+        return null; 
+      }
+    });
+    
+    if (token && token.length > 50) {
+      log('Token successfully extracted!');
+      parentPort.postMessage({ type: 'token', token, email, username });
+    } else {
+      log('Failed to extract token');
+    }
+    
+    await browser.close();
+    
+  } catch (err) {
+    log(`Error: ${err.message.slice(0, 200)}`);
+    parentPort.postMessage({ type: 'error', error: err.message });
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+function main() {
+  log('Worker initialized');
+  
+  async function loop() {
+    while (true) {
+      try {
+        await createAccount();
+        const waitTime = isDirectMode() ? 120000 : 45000 + Math.random() * 45000;
+        log(`Waiting ${Math.round(waitTime/1000)}s before next attempt...`);
+        await delay(waitTime, waitTime);
+      } catch (err) {
+        log(`Loop error: ${err.message}`);
+        await delay(60000, 90000);
+      }
+    }
+  }
+  
+  setTimeout(loop, 1000 + Math.random() * 2000);
+}
+
+main();
