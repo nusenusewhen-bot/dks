@@ -1,6 +1,11 @@
 const sharp = require('sharp');
 const axios = require('axios');
 
+// Local log function to avoid scope issues
+function log(msg) {
+  console.log(`[CAPTCHA] ${msg}`);
+}
+
 class UltimateCaptchaSolver {
   constructor() {
     this.challengeTypes = {
@@ -14,7 +19,7 @@ class UltimateCaptchaSolver {
 
   async solve(frame, page) {
     const challengeType = await this.detectChallengeType(frame);
-    console.log(`[CAPTCHA] Type: ${challengeType}`);
+    log(`Type: ${challengeType}`);
 
     switch(challengeType) {
       case this.challengeTypes.IMAGE_CLASSIFICATION:
@@ -59,12 +64,11 @@ class UltimateCaptchaSolver {
 
   async solveImageClassification(frame) {
     const images = await frame.$$('.task-image, .challenge-image, [data-index]');
-    console.log(`[CAPTCHA] Found ${images.length} images`);
+    log(`Found ${images.length} images`);
     
     for (let i = 0; i < images.length; i++) {
       await new Promise(r => setTimeout(r, 800 + Math.random() * 700));
       
-      // Random selection for now
       if (Math.random() > 0.5) {
         await images[i].click();
         await new Promise(r => setTimeout(r, 300 + Math.random() * 300));
@@ -76,10 +80,10 @@ class UltimateCaptchaSolver {
   }
 
   async solvePuzzleDrag(frame, page) {
-    console.log('[CAPTCHA] Solving puzzle drag...');
+    log('Solving puzzle drag...');
     
     const pieces = await frame.$$('.puzzle-piece, .drag-piece, .draggable, .piece');
-    console.log(`[CAPTCHA] ${pieces.length} pieces found`);
+    log(`${pieces.length} pieces found`);
     
     for (const piece of pieces) {
       const targets = await frame.$$('.drop-zone, .puzzle-slot, .target-zone, .slot');
@@ -99,13 +103,13 @@ class UltimateCaptchaSolver {
   }
 
   async solvePuzzleSlide(frame, page) {
-    console.log('[CAPTCHA] Solving slider...');
+    log('Solving slider...');
     
     const slider = await frame.$('.slider, .puzzle-slider');
     const track = await frame.$('.slider-track, .track');
     
     if (!slider || !track) {
-      console.log('[CAPTCHA] Slider elements not found');
+      log('Slider elements not found');
       return false;
     }
 
@@ -164,7 +168,7 @@ class UltimateCaptchaSolver {
       return document.querySelector('.prompt-text, .question-text')?.textContent || '';
     });
 
-    console.log(`[CAPTCHA] Question: ${question}`);
+    log(`Question: ${question}`);
     
     const answer = this.parseLogicalQuestion(question);
     const options = await frame.$$('.option, .answer-option, .choice, [role="button"]');
@@ -209,7 +213,7 @@ class UltimateCaptchaSolver {
   }
 
   async solveSpatialReasoning(frame, page) {
-    console.log('[CAPTCHA] Spatial reasoning...');
+    log('Spatial reasoning...');
     
     const pieces = await frame.$$('.available-piece, .draggable-piece, .piece');
     const cells = await frame.$$('.grid-cell, .pattern-cell, .cell');
@@ -280,7 +284,6 @@ class UltimateCaptchaSolver {
   }
 }
 
-// CommonJS export
 module.exports = {
   UltimateCaptchaSolver,
   solve: async (frame, page) => {
