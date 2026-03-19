@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 const { getWorkingProxy, isDirectMode, getProxyCount } = require('./proxies');
 const { getTempEmail, checkInbox } = require('./email');
 const { generateInsaneFPS, injectFPS } = require('./utils');
-const { solve } = require('./captcha-solver');
+const { HardwareMouse, SessionBehavior, VisualCaptchaSolver } = require('./captcha-solver');
 
 function log(msg) {
   parentPort.postMessage({ type: 'log', data: `[W${workerData.workerId}] ${msg}` });
@@ -11,65 +11,6 @@ function log(msg) {
 
 async function randomDelay(min, max) {
   return new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
-}
-
-async function humanType(page, selector, text) {
-  const el = await page.$(selector);
-  if (!el) return;
-  
-  await el.click();
-  await randomDelay(150, 350);
-  
-  await page.keyboard.press('Control+a');
-  await page.keyboard.press('Delete');
-  await randomDelay(100, 200);
-  
-  for (let i = 0; i < text.length; i++) {
-    await page.keyboard.press(text[i]);
-    const delay = 30 + Math.random() * 100;
-    await new Promise(r => setTimeout(r, delay));
-  }
-}
-
-async function humanClick(page, selector) {
-  const el = await page.$(selector);
-  if (!el) return false;
-  
-  const box = await el.boundingBox();
-  if (!box) return false;
-  
-  const x = box.x + 10 + Math.random() * (box.width - 20);
-  const y = box.y + 10 + Math.random() * (box.height - 20);
-  
-  await page.mouse.move(x, y, { steps: 8 });
-  await randomDelay(80, 200);
-  await page.mouse.down();
-  await randomDelay(20, 80);
-  await page.mouse.up();
-  
-  return true;
-}
-
-async function extractToken(page) {
-  await randomDelay(2000, 4000);
-  
-  return await page.evaluate(() => {
-    try {
-      if (window.localStorage) {
-        const t = window.localStorage.getItem('token');
-        if (t) return t;
-      }
-      if (window.sessionStorage) {
-        const t = window.sessionStorage.getItem('token');
-        if (t) return t;
-      }
-      const cookie = document.cookie.match(/token=([^;]+)/);
-      if (cookie) return cookie[1];
-      return null;
-    } catch (e) {
-      return null;
-    }
-  });
 }
 
 async function createAccount() {
@@ -98,7 +39,9 @@ async function createAccount() {
         '--no-zygote',
         '--single-process',
         '--disable-gpu',
-        '--window-size=1366,768'
+        '--window-size=1366,768',
+        '--lang=en-US,en',
+        '--timezone=America/New_York'
       ]
     };
     
@@ -114,156 +57,145 @@ async function createAccount() {
       viewport: { width: 1366, height: 768 },
       screen: { width: 1366, height: 768 },
       userAgent: fingerprint.userAgent,
-      locale: fingerprint.locale,
-      timezoneId: fingerprint.timezone,
+      locale: 'en-US',
+      timezoneId: 'America/New_York',
       geolocation: fingerprint.geolocation,
       permissions: ['notifications'],
-      colorScheme: 'light'
+      colorScheme: 'light',
+      deviceScaleFactor: 1,
+      hasTouch: false
+    });
+    
+    // Stealth injection
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, 'plugins', { 
+        get: () => [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+          { name: 'Native Client', filename: 'native-client.dll' }
+        ] 
+      });
+      Object.defineProperty(navigator, 'permissions', {
+        get: () => ({ query: async () => ({ state: 'prompt' }) })
+      });
+      
+      const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+      CanvasRenderingContext2D.prototype.getImageData = function(...args) {
+        const imageData = originalGetImageData.apply(this, args);
+        for (let i = 0; i < imageData.data.length; i += 4) {
+          imageData.data[i] += Math.floor(Math.random() * 2);
+        }
+        return imageData;
+      };
+      
+      Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     });
     
     const page = await context.newPage();
-    await injectFPS(page, fingerprint);
     
-    await randomDelay(3000, 5000);
+    // Warm up with fake referrer
+    log('Warming up session...');
+    await page.goto('https://google.com', { waitUntil: 'networkidle', timeout: 30000 });
+    await randomDelay(2000, 4000);
     
-    log('Loading Discord...');
-    await page.goto('https://discord.com/register', { 
-      waitUntil: 'networkidle',
-      timeout: 30000 
-    });
-    
-    await randomDelay(3000, 5000);
-    
-    const blocked = await page.$('text=Sorry, something went wrong') 
-      || await page.$('text=You are being rate limited')
-      || await page.$('text=Access denied');
-      
-    if (blocked) {
-      log('Blocked - closing');
-      await browser.close();
-      return;
-    }
-    
-    const captchaImmediate = await page.$('iframe[src*="hcaptcha"]');
-    if (captchaImmediate) {
-      log('Instant captcha - attempting solve...');
-      const frame = await captchaImmediate.contentFrame();
-      const solved = await solve(frame, page);
-      if (!solved) {
-        log('Captcha solve failed');
-        await browser.close();
-        return;
-      }
-    }
-    
-    log('Filling form...');
-    
-    await humanType(page, 'input[name="email"]', email);
-    await randomDelay(1000, 2000);
-    
-    const username = `user_${Math.floor(Math.random() * 100000000)}`;
-    await humanType(page, 'input[name="username"]', username);
-    await randomDelay(1000, 2000);
-    
-    const password = `Pass${Math.random().toString(36).slice(2, 12)}!`;
-    await humanType(page, 'input[name="password"]', password);
-    await randomDelay(1000, 2000);
-    
-    log('Setting DOB...');
-    
-    await page.evaluate(() => {
-      const monthBtn = document.querySelector('[aria-label="Month"]');
-      if (monthBtn) {
-        monthBtn.click();
-        setTimeout(() => {
-          const jan = Array.from(document.querySelectorAll('*')).find(el => el.textContent?.trim() === 'January');
-          if (jan) jan.click();
-        }, 200);
-      }
-    });
-    await randomDelay(800, 1200);
-    
-    await page.evaluate(() => {
-      const dayBtn = document.querySelector('[aria-label="Day"]');
-      if (dayBtn) {
-        dayBtn.click();
-        setTimeout(() => {
-          const d15 = Array.from(document.querySelectorAll('*')).find(el => el.textContent?.trim() === '15');
-          if (d15) d15.click();
-        }, 200);
-      }
-    });
-    await randomDelay(800, 1200);
-    
-    await page.evaluate(() => {
-      const yearBtn = document.querySelector('[aria-label="Year"]');
-      if (yearBtn) {
-        yearBtn.click();
-        setTimeout(() => {
-          const y95 = Array.from(document.querySelectorAll('*')).find(el => el.textContent?.trim() === '1995');
-          if (y95) y95.click();
-        }, 200);
-      }
-    });
+    // Navigate to Discord organically
+    await page.goto('https://discord.com', { waitUntil: 'networkidle', timeout: 30000 });
     await randomDelay(1500, 2500);
     
-    const dobCheck = await page.evaluate(() => {
-      const m = document.querySelector('[aria-label="Month"]')?.textContent?.trim();
-      const d = document.querySelector('[aria-label="Day"]')?.textContent?.trim();
-      const y = document.querySelector('[aria-label="Year"]')?.textContent?.trim();
-      return { month: m, day: d, year: y };
-    });
-    
-    log(`DOB: ${dobCheck.month} / ${dobCheck.day} / ${dobCheck.year}`);
-    
-    const terms = await page.$('input[type="checkbox"]');
-    if (terms) {
-      await terms.click();
-      await randomDelay(500, 1000);
-    }
-    
-    log('Submitting...');
-    await randomDelay(2000, 4000);
-    await humanClick(page, 'button[type="submit"]');
-    await randomDelay(1000, 2000);
-    
-    await randomDelay(8000, 12000);
-    
-    const rateLimitAfter = await page.evaluate(() => {
-      return document.body.innerText.includes('rate limited') || 
-             document.body.innerText.includes('being rate limited');
-    });
-    
-    if (rateLimitAfter) {
-      log('Rate limited after submit');
+    // Click register
+    const registerBtn = await page.$('a[href="/register"]');
+    if (!registerBtn) {
+      log('Register button not found');
       await browser.close();
       return;
     }
     
-    const captcha = await page.$('iframe[src*="hcaptcha"]');
-    if (captcha) {
-      log('Post-submit captcha detected');
-      const frame = await captcha.contentFrame();
-      const solved = await solve(frame, page);
-      if (!solved) {
-        log('Captcha solve failed');
+    // Initialize session behavior
+    const session = new SessionBehavior(page);
+    await session.mouse.click(registerBtn);
+    await page.waitForLoadState('networkidle');
+    
+    // Natural session behavior
+    log('Simulating natural behavior...');
+    await session.naturalSession();
+    
+    // Fill form
+    log('Filling form...');
+    const username = `user_${Math.floor(Math.random() * 100000000)}`;
+    const password = `Pass${Math.random().toString(36).slice(2, 12)}!`;
+    
+    await session.typeLikeHuman('input[name="email"]', email);
+    await session.randomIdle(800, 1500);
+    
+    await session.typeLikeHuman('input[name="username"]', username);
+    await session.randomIdle(600, 1200);
+    
+    await session.typeLikeHuman('input[name="password"]', password);
+    await session.randomIdle(1000, 2000);
+    
+    // Set DOB
+    log('Setting DOB...');
+    await page.click('[aria-label="Month"]');
+    await randomDelay(300, 500);
+    await page.click('text=January');
+    await session.randomIdle(300, 600);
+    
+    await page.click('[aria-label="Day"]');
+    await randomDelay(200, 400);
+    await page.click('text=15');
+    await session.randomIdle(400, 800);
+    
+    await page.click('[aria-label="Year"]');
+    await randomDelay(400, 600);
+    await page.click('text=1995');
+    
+    // Check terms
+    await session.randomIdle(1000, 2000);
+    const terms = await page.$('input[type="checkbox"]');
+    if (terms) await terms.click();
+    
+    // Submit
+    await session.randomIdle(1500, 3000);
+    log('Submitting...');
+    await session.mouse.click(await page.$('button[type="submit"]'));
+    
+    // Wait for captcha or redirect
+    await randomDelay(4000, 6000);
+    
+    // Check for captcha
+    const captchaFrame = await page.$('iframe[src*="hcaptcha"]');
+    if (captchaFrame) {
+      log('Captcha detected, solving...');
+      const frame = await captchaFrame.contentFrame();
+      const solver = new VisualCaptchaSolver(page, session);
+      const solved = await solver.solve(frame);
+      
+      if (solved) {
+        log('Captcha passed');
+      } else {
+        log('Captcha failed');
       }
+      
       await randomDelay(5000, 8000);
     }
     
+    // Check for phone verification
     const phone = await page.$('text=Verify your phone') || await page.$('input[type="tel"]');
     if (phone) {
-      log('Phone required');
+      log('Phone required, aborting');
       await browser.close();
       return;
     }
     
-    await randomDelay(3000, 5000);
-    
-    const url = page.url();
-    log(`URL: ${url}`);
-    
-    const token = await extractToken(page);
+    // Extract token
+    const token = await page.evaluate(() => {
+      try {
+        return localStorage.getItem('token') || 
+               sessionStorage.getItem('token') || 
+               document.cookie.match(/token=([^;]+)/)?.[1];
+      } catch (e) { return null; }
+    });
     
     if (token && token.length > 50) {
       log('Token extracted!');
